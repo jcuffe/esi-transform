@@ -1,12 +1,9 @@
 const express = require('express');
 const axios = require('axios');
 const endpoints = require('./endpoints');
-const knex = require('knex')({
-  client: 'sqlite3',
-  connection: {
-    filename: "./sde.sqlite"
-  }
-});
+const { 
+  lookupTypeMaterials, 
+} = require('./fetchers');
 
 const app = express();
 
@@ -16,21 +13,20 @@ const asyncMiddleware = (fn) =>
       .resolve(fn(req, res, next))
       .catch(next);
 
-app.get('/transactions/:corpId', asyncMiddleware(async (req, res) => {
+app.get('/transactions/:corpID', asyncMiddleware(async (req, res) => {
   const { authorization } = req.headers;
-  const { corpId } = req.params;
+  const { corpID } = req.params;
   const options = { headers: { authorization } };
-  const corpTransactions = (await Promise.all(
-    (await axios.get(endpoints.corpTransactions(corpId), options))
-      .data
-      .filter(tx => tx.is_buy) 
-      .map(async tx => {
-        const { date, quantity, type_id: typeId, unit_price: unitPrice } = tx;
-        const { typeName } = await knex.table("invTypes").where({ typeID: typeId }).first("typeName");
-        return { typeName, quantity, unitPrice, date, typeId };
-      })))
-    .reduce((dict, tx) => ({ ...dict, [tx.typeId]: dict[tx.typeId] ? [...dict[tx.typeId], tx ] : [tx] }), {});
+  const { data: corpAssets } = await axios.get(endpoints.corpAssets(corpID), options);
+  const corpTransactions = fetchCorpTransactions(corpID, options);
   res.json({ corpAssets, corpTransactions });
+}));
+
+app.get('/materials/:corpID/:typeID', asyncMiddleware(async (req, res) => {
+  const { corpID, typeID } = req.params;
+  const { authorization } = req.headers;
+  const options = { headers: { authorization } };
+  res.json(await lookupTypeMaterials(corpID, typeID, options));
 }));
 
 app.listen(5000, () => console.log("listening..."));
