@@ -2,6 +2,7 @@ const apiUrl = "https://esi.evetech.net/latest/";
 
 const endpoints = {
   corpAssets: (corporationId) => apiUrl + `corporations/${corporationId}/assets`,
+  corpBlueprints: (corporationId) => apiUrl + `corporations/${corporationId}/blueprints`,
   corpTransactions: (corporationId, walletDivision = 1) => apiUrl + `corporations/${corporationId}/wallets/${walletDivision}/transactions`,
   names: apiUrl + "universe/names",
   systemIds: apiUrl + "universe/systems",
