@@ -3,7 +3,7 @@ const endpoints = require('./endpoints');
 const knex = require('knex')({
   client: 'sqlite3',
   connection: {
-    filename: "./sde.sqlite"
+    filename: "./types.sqlite"
   }
 });
 
@@ -29,6 +29,24 @@ const fetchBlueprint = async (corpID, typeID, reqOptions) => {
 
   console.log("Blueprints", blueprints);
   return blueprints[0];
+};
+
+const lookupTypes = async () => {
+  const categoryIDs = [
+    4, 5, 6, 7, 8, 9, 10, 14, 16, 17, 18, 20, 
+    22,23, 24, 25, 30, 32, 34, 35, 39, 40, 41,
+    42, 43, 46, 49, 63, 65, 66, 87, 91, 350001
+  ] 
+  
+  const rows = await knex
+    .table("invTypes")
+    .join("invGroups", "invTypes.groupID", "invGroups.groupID")
+    .whereIn("CategoryID", categoryIDs)
+    .select("typeID", "groupName", "typeName");
+
+  const types = {};
+  rows.forEach(type => types[type.typeID] = type);
+  return types;
 }
 
 const lookupTypeBlueprint = async (productTypeID) => {
@@ -68,6 +86,7 @@ const lookupTypeMaterials = async (corpID, productTypeID, reqOptions, parentNeed
     }
     const materialName = await lookupTypeName(material.materialTypeID);
     const ratio = 100 - materialEfficiency;
+    const needed = Math.ceil((quantity * ratio / 100) * parentNeeds / quantity);
     return { materialName, materialTypeID, quantity: quantity * ratio / 100 };
   }));
 
@@ -89,6 +108,7 @@ const lookupTypeMaterials = async (corpID, productTypeID, reqOptions, parentNeed
 module.exports = { 
   fetchCorpTransactions, 
   fetchBlueprint,
+  lookupTypes,
   lookupTypeName, 
   lookupTypeBlueprint, 
   lookupTypeMaterials

@@ -1,11 +1,14 @@
 const express = require('express');
 const axios = require('axios');
+const cors = require('cors');
 const endpoints = require('./endpoints');
 const { 
   lookupTypeMaterials, 
+  lookupTypes,
 } = require('./fetchers');
 
 const app = express();
+app.use(cors());
 
 const asyncMiddleware = (fn) =>
   (req, res, next) => 
@@ -27,6 +30,10 @@ app.get('/materials/:corpID/:typeID', asyncMiddleware(async (req, res) => {
   const { authorization } = req.headers;
   const options = { headers: { authorization } };
   res.json(await lookupTypeMaterials(corpID, typeID, options));
+}));
+
+app.get('/types', asyncMiddleware(async (req, res) => {
+  res.json(await lookupTypes());
 }));
 
 app.listen(5000, () => console.log("listening..."));
