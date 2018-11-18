@@ -4,6 +4,7 @@
   "description": "In-memory cache for expensive queries to ESI.",
   "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -18,9 +19,6 @@
   "homepage": "https://github.com/jcuffe/esi-cache#readme",
   "dependencies": {
     "axios": "^0.18.0",
-    "cors": "^2.8.4",
-    "express": "^4.16.3",
-    "knex": "^0.15.2",
-    "sqlite3": "^4.0.2"
+    "express": "^4.16.3"
   }
 }
