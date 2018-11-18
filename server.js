@@ -10,12 +10,13 @@ app.get('/', (req, res) => {
 app.get('/market', (req, res) => {
   const types = req.query.types.split(',');
   const requests = types.map(type => {
-    return axios.get(endpoints.regionOrders(10000060, type))
+    return axios.get(endpoints.regionOrders(10000002, type)) // The Forge region
   });
   const response = {};
   Promise.all(requests)
     .then(responses => responses.map(({ data }) => data))
     .then(types => types.forEach(orders => {
+      orders = orders.filter(order => order.location_id == 60003760); // Jita 4-4
       if (orders.length == 0) {
         return;
       }
