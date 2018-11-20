@@ -1,6 +1,7 @@
 const express = require('express');
 const basicAuth = require('express-basic-auth');
 const axios = require('axios');
+const util = require('util');
 const endpoints = require('./endpoints');
 const { Client } = require('pg');
 
@@ -18,12 +19,22 @@ app.use(basicAuth({
 }));
 
 app.get('/materials', (req, res) => {
-  const { type } = req.query;
-  pgClient.query(`select * from lookup_materials(${type})`)
-    .then(({ rows }) => {
-
-      console.log(rows);
-      res.send(rows);
+  const { type, build_from } = req.query;
+  pgClient
+  .query(`select * from lookup_materials(${type})`)
+  .then(({ rows }) => {
+      const heirarchy = {};
+      rows.forEach(({ output_id, output_name, output_quantity, input_id, input_name, input_quantity }) => {
+        heirarchy[output_id] = {
+          output_name,
+          output_quantity,
+          inputs: [
+            { input_id, input_name, input_quantity },
+            ...(heirarchy[output_id] ? heirarchy[output_id].inputs : [])
+          ]
+        };
+      });
+      res.json(heirarchy);
     })
     .catch((error) => {
       console.log(error);
@@ -41,13 +52,13 @@ app.get('/market', (req, res) => {
 
 const getSplitForTypes = (types) => {
   return new Promise((resolve, reject) => {
-  const requests = [];
-  types.forEach(type => {
-    const highSec = axios.get(endpoints.regionOrders(10000002, type)); // The Forge region
-    requests.push(highSec);
-  });
+    const requests = [];
+    types.forEach(type => {
+      const highSec = axios.get(endpoints.regionOrders(10000002, type)); // The Forge region
+      requests.push(highSec);
+    });
     const splits = {};
-  Promise.all(requests)
+    Promise.all(requests)
       .then(responses => {
         const maxPages = responses
           .map(response => response.headers['x-pages'])
@@ -59,11 +70,11 @@ const getSplitForTypes = (types) => {
         
         return responses.map(({ data }) => data)
       })
-    .then(types => types.forEach(orders => {
-      orders = orders.filter(order => order.location_id == 60003760); // Jita 4-4
-      if (orders.length == 0) {
-        return;
-      }
+      .then(types => types.forEach(orders => {
+        orders = orders.filter(order => order.location_id == 60003760); // Jita 4-4
+        if (orders.length == 0) {
+          return;
+        }
 
         const buy = orders
           .filter(order => order.is_buy_order)
@@ -77,9 +88,9 @@ const getSplitForTypes = (types) => {
 
         const type = orders[0].type_id;
         splits[type] = { buy, sell };
-    }))
+      }))
       .then(() => resolve(splits));
-});
+  });
 }
 
 const port = process.env.PORT || 5000;
