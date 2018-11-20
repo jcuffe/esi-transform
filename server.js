@@ -24,17 +24,54 @@ app.get('/materials', (req, res) => {
   .query(`select * from lookup_materials(${type})`)
   .then(({ rows }) => {
       const heirarchy = {};
+      const types = [];
       rows.forEach(({ output_id, output_name, output_quantity, input_id, input_name, input_quantity }) => {
+        // Track current types for price fetching
+        types.push(output_id, input_id);
+
+        // Place current pairing in the blueprint heirarchy
         heirarchy[output_id] = {
-          output_name,
-          output_quantity,
+          name: output_name,
+          quantity: output_quantity,
           inputs: [
-            { input_id, input_name, input_quantity },
+            { id: input_id, name: input_name, quantity: input_quantity },
             ...(heirarchy[output_id] ? heirarchy[output_id].inputs : [])
           ]
         };
       });
-      res.json(heirarchy);
+
+      // Fetch prices for each unique type
+      getSplitForTypes(Array.from(new Set(types)))
+        .then(prices => {
+
+          // Assign prices to the top level of the heirarchy
+          outputs = Object.keys(heirarchy);
+          outputs.forEach(id => {
+            let { buy, sell } = prices[id];
+            const { name, quantity } = heirarchy[id];
+            const inputs = heirarchy[id].inputs.map(input => {
+              const { buy, sell } = prices[input.id];
+              return {
+                buy,
+                sell,
+                ...input
+              }
+            });
+
+            const build = inputs.reduce((sum, curr) => sum + curr.quantity * curr.buy, 0) / quantity;
+            
+            heirarchy[id] = {
+              name,
+              quantity,
+              build,
+              buy,
+              sell,
+              inputs
+            };
+          });
+          res.json(heirarchy);
+        });
+
     })
     .catch((error) => {
       console.log(error);
