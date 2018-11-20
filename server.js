@@ -1,4 +1,5 @@
 const express = require('express');
+const basicAuth = require('express-basic-auth');
 const axios = require('axios');
 const endpoints = require('./endpoints');
 const { Client } = require('pg');
@@ -11,10 +12,15 @@ const pgClient = new Client({
   ssl: true
 });
 
+app.use(basicAuth({
+  users: { 'hivSD': 'noSpiesAllowed' }
+}));
+
 app.get('/materials', (req, res) => {
   const { type } = req.query;
   pgClient.query(`select * from lookup_materials(${type})`)
     .then(({ rows }) => {
+
       console.log(rows);
       res.send(rows);
     })
@@ -29,8 +35,8 @@ app.get('/market', (req, res) => {
   const requests = [];
   types.forEach(type => {
     const highSec = axios.get(endpoints.regionOrders(10000002, type)); // The Forge region
-    const nullSec = axios.get(endpoints.structureOrders(1022734985679)); // 1st Thetastar of Dickbutt
-    requests.push(highSec, nullSec);
+    // const nullSec = axios.get(endpoints.structureOrders(1022734985679)); // 1st Thetastar of Dickbutt
+    requests.push(highSec);
   });
   const response = {};
   Promise.all(requests)
