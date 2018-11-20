@@ -11,6 +11,7 @@ const pgClient = new Client({
   connectionString: process.env.DATABASE_URL,
   ssl: true
 });
+const MAX = Number.MAX_SAFE_INTEGER;
 
 app.use(basicAuth({
   users: { 'hivSD': 'noSpiesAllowed' }
@@ -32,37 +33,54 @@ app.get('/materials', (req, res) => {
 
 app.get('/market', (req, res) => {
   const types = req.query.types.split(',');
+  getSplitForTypes(types)
+    .then(response => {
+      res.send(response);
+    }); 
+});
+
+const getSplitForTypes = (types) => {
+  return new Promise((resolve, reject) => {
   const requests = [];
   types.forEach(type => {
     const highSec = axios.get(endpoints.regionOrders(10000002, type)); // The Forge region
-    // const nullSec = axios.get(endpoints.structureOrders(1022734985679)); // 1st Thetastar of Dickbutt
     requests.push(highSec);
   });
-  const response = {};
+    const splits = {};
   Promise.all(requests)
-    .then(responses => responses.map(({ data }) => data))
+      .then(responses => {
+        const maxPages = responses
+          .map(response => response.headers['x-pages'])
+          .reduce((max, curr) => curr > max ? cur : max);
+
+        if (maxPages > 1) {
+          console.error(`===== A request returned multiple pages. x-pages: ${response.headers['x-pages']} =====`);
+        }
+        
+        return responses.map(({ data }) => data)
+      })
     .then(types => types.forEach(orders => {
       orders = orders.filter(order => order.location_id == 60003760); // Jita 4-4
       if (orders.length == 0) {
         return;
       }
 
-      const buys = orders.filter(order => order.is_buy_order)
-      const sells = orders.filter(order => !order.is_buy_order)
+        const buy = orders
+          .filter(order => order.is_buy_order)
+          .map(order => order.price)
+          .reduce((max, curr) => curr > max ? curr : max, 0);
 
-      const topBuy = buys.length > 0 
-        ? buys.reduce((max, curr) => curr.price > max.price ? curr : max).price
-        : -1;
+        const sell = orders
+          .filter(order => !order.is_buy_order)
+          .map(order => order.price)
+          .reduce((min, curr) => curr < min ? curr : min, MAX);
 
-      const bottomSell = sells.length > 0
-        ? sells.reduce((min, curr) => curr.price < min.price ? curr : min).price
-        : -1;
-
-      const typeID = orders[0].type_id;
-      response[typeID] = { topBuy, bottomSell };
+        const type = orders[0].type_id;
+        splits[type] = { buy, sell };
     }))
-    .then(() => res.json(response));
+      .then(() => resolve(splits));
 });
+}
 
 const port = process.env.PORT || 5000;
 
