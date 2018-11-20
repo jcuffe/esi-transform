@@ -23,55 +23,31 @@ app.get('/materials', (req, res) => {
   pgClient
   .query(`select * from lookup_materials(${type})`)
   .then(({ rows }) => {
-      const heirarchy = {};
-      const types = [];
+      const types = {};
       rows.forEach(({ output_id, output_name, output_quantity, input_id, input_name, input_quantity }) => {
-        // Track current types for price fetching
-        types.push(output_id, input_id);
-
-        // Place current pairing in the blueprint heirarchy
-        heirarchy[output_id] = {
+        types[output_id] = {
           name: output_name,
-          quantity: output_quantity,
-          inputs: [
-            { id: input_id, name: input_name, quantity: input_quantity },
-            ...(heirarchy[output_id] ? heirarchy[output_id].inputs : [])
-          ]
+          recipe_quantity: output_quantity,
+          ...types[output_id]
         };
+
+        types[output_id].inputs = {
+          [input_id]: input_quantity,
+          ...(types[output_id] && types[output_id].inputs)
+        };
+
+        types[input_id] = {
+          name: input_name,
+          ...types[input_id],
+        };
+
+        types[input_id].outputs = {
+          [output_id]: input_quantity,
+          ...(types[input_id] && types[input_id].outputs)
+        }
       });
-
-      // Fetch prices for each unique type
-      getSplitForTypes(Array.from(new Set(types)))
-        .then(prices => {
-
-          // Assign prices to the top level of the heirarchy
-          outputs = Object.keys(heirarchy);
-          outputs.forEach(id => {
-            let { buy, sell } = prices[id];
-            const { name, quantity } = heirarchy[id];
-            const inputs = heirarchy[id].inputs.map(input => {
-              const { buy, sell } = prices[input.id];
-              return {
-                buy,
-                sell,
-                ...input
-              }
-            });
-
-            const build = inputs.reduce((sum, curr) => sum + curr.quantity * curr.buy, 0) / quantity;
-            
-            heirarchy[id] = {
-              name,
-              quantity,
-              build,
-              buy,
-              sell,
-              inputs
-            };
-          });
-          res.json(heirarchy);
-        });
-
+      getSplitForTypes(types)
+        .then(types => res.json(types));
     })
     .catch((error) => {
       console.log(error);
@@ -80,31 +56,26 @@ app.get('/materials', (req, res) => {
 });
 
 app.get('/market', (req, res) => {
-  const types = req.query.types.split(',');
+  const types = {};
   pgClient
     .query(`select "typeName" as name, "typeID" as id from "invTypes" where "typeID" in (${req.query.types})`)
     .then(({ rows }) => {
-  getSplitForTypes(types)
-        .then(splits => {
-          rows.forEach(({ name, id }) => {
-            splits[id] = {
-              name,
-              ...splits[id]
-            }
-          });
-          res.send(splits);
-        })
+      rows.forEach(({ name, id }) => types[id] = { name });
+      getSplitForTypes(types).then(splits => res.send(splits));
     }); 
 });
 
+//
+// Adds buy / sell split to provided object with typeIDs for keys
+//
+
 const getSplitForTypes = (types) => {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     const requests = [];
-    types.forEach(type => {
+    Object.keys(types).forEach(type => {
       const highSec = axios.get(endpoints.regionOrders(10000002, type)); // The Forge region
       requests.push(highSec);
     });
-    const splits = {};
     Promise.all(requests)
       .then(responses => {
         const maxPages = responses
@@ -117,7 +88,7 @@ const getSplitForTypes = (types) => {
         
         return responses.map(({ data }) => data)
       })
-      .then(types => types.forEach(orders => {
+      .then(responses => responses.forEach(orders => {
         orders = orders.filter(order => order.location_id == 60003760); // Jita 4-4
         if (orders.length == 0) {
           return;
@@ -133,10 +104,10 @@ const getSplitForTypes = (types) => {
           .map(order => order.price)
           .reduce((min, curr) => curr < min ? curr : min, MAX);
 
-        const type = orders[0].type_id;
-        splits[type] = { buy, sell };
+        const id = orders[0].type_id;
+        types[id] = { buy, sell, ...types[id] };
       }))
-      .then(() => resolve(splits));
+      .then(() => resolve(types));
   });
 }
 
