@@ -81,9 +81,19 @@ app.get('/materials', (req, res) => {
 
 app.get('/market', (req, res) => {
   const types = req.query.types.split(',');
+  pgClient
+    .query(`select "typeName" as name, "typeID" as id from "invTypes" where "typeID" in (${req.query.types})`)
+    .then(({ rows }) => {
   getSplitForTypes(types)
-    .then(response => {
-      res.send(response);
+        .then(splits => {
+          rows.forEach(({ name, id }) => {
+            splits[id] = {
+              name,
+              ...splits[id]
+            }
+          });
+          res.send(splits);
+        })
     }); 
 });
 
