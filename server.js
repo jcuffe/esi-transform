@@ -1,16 +1,36 @@
 const express = require('express');
 const axios = require('axios');
 const endpoints = require('./endpoints');
+const { Client } = require('pg');
+
+require('dotenv').config();
 
 const app = express();
+const pgClient = new Client({
+  connectionString: process.env.DATABASE_URL,
+  ssl: true
+});
 
-app.get('/', (req, res) => {
-  res.json({ "hello": "hello" });
-})
+app.get('/materials', (req, res) => {
+  const { type } = req.query;
+  pgClient.query(`select * from lookup_materials(${type})`)
+    .then(({ rows }) => {
+      console.log(rows);
+      res.send(rows);
+    })
+    .catch((error) => {
+      console.log(error);
+      res.send(error);
+    });
+});
+
 app.get('/market', (req, res) => {
   const types = req.query.types.split(',');
-  const requests = types.map(type => {
-    return axios.get(endpoints.regionOrders(10000002, type)) // The Forge region
+  const requests = [];
+  types.forEach(type => {
+    const highSec = axios.get(endpoints.regionOrders(10000002, type)); // The Forge region
+    const nullSec = axios.get(endpoints.structureOrders(1022734985679)); // 1st Thetastar of Dickbutt
+    requests.push(highSec, nullSec);
   });
   const response = {};
   Promise.all(requests)
@@ -39,4 +59,14 @@ app.get('/market', (req, res) => {
 });
 
 const port = process.env.PORT || 5000;
-app.listen(port, () => "Server started");
+
+pgClient
+  .connect()
+  .then(() => {
+    app.listen(port, () => {
+      console.log("Server started")
+    })
+  })
+  .catch((err) => {
+    console.log(err)
+  });
