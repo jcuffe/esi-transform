@@ -14,59 +14,20 @@ const pgClient = new Client({
 const MAX = Number.MAX_SAFE_INTEGER;
 
 app.get("/materials", (req, res) => {
-  const { type, build_from } = req.query;
-  pgClient
-    .query(`select * from lookup_materials(${type})`)
-    .then(({ rows }) => {
-      const types = {};
-      rows.forEach(
-        ({
-          output_id,
-          output_name,
-          output_quantity,
-          input_id,
-          input_name,
-          input_quantity
-        }) => {
-          types[output_id] = {
-            name: output_name,
-            recipe_quantity: output_quantity,
-            ...types[output_id]
-          };
-
-          types[output_id].inputs = {
-            [input_id]: input_quantity,
-            ...(types[output_id] && types[output_id].inputs)
-          };
-
-          types[input_id] = {
-            name: input_name,
-            ...types[input_id]
-          };
-
-          types[input_id].outputs = {
-            [output_id]: input_quantity,
-            ...(types[input_id] && types[input_id].outputs)
-          };
-        }
-      );
-
-      injectMarketSplit(types)
-        .then(injectAdjustedPrice)
-        .then(injectBuildCost(type))
-        .then(types => {
-          res.json(types);
-        });
-    })
-    .catch(error => {
-      console.log(error);
-      res.send(error);
+  const { type } = req.query;
+  createHeirarchyForType(type)
+    .then(injectTypeName)
+    .then(injectMarketSplit)
+    .then(injectAdjustedPrice)
+    .then(injectBuildCost(type))
+    .then(types => {
+      res.json(types);
     });
 });
 
 app.get("/market", (req, res) => {
-  const types = {};
-  injectTypeNames(req.query.types, types)
+  createTypesContainer(req.query.types.split(','))
+    .then(injectTypeNames)
     .then(injectMarketSplit)
     .then(types => {
       res.json(types);
@@ -97,10 +58,10 @@ const cacheRequest = request => {
 // Queries for PSQL
 //
 
+const materialsForType = id => `select * from lookup_materials(${id})`;
+
 const namesForTypes = ids => `
-  select "typeName" as name, "typeID" as id from "invTypes" where "typeID" in (${
-    ids
-  })
+  select "typeName" as name, "typeID" as id from "invTypes" where "typeID" in (${ids})
 `;
 
 //
@@ -113,8 +74,48 @@ const getSystemCosts = cacheRequest(systemCostsRequest);
 const adjustedPricesRequest = () => axios.get(endpoints.marketPrices);
 const getAdjustedPrices = cacheRequest(adjustedPricesRequest);
 
-const marketSplitRequest = id => axios.get(endpoints.regionOrders(10000002, id));
+const marketSplitRequest = id =>
+  axios.get(endpoints.regionOrders(10000002, id));
 const getJitaSplit = cacheRequest(marketSplitRequest);
+
+const createTypesContainer = ids => {
+  return new Promise(resolve => {
+    const types = {};
+    ids.forEach(id => types[id] = {});
+    resolve(types);
+  })
+}
+
+const createHeirarchyForType = type => {
+  return new Promise(resolve => {
+    pgClient.query(materialsForType(type)).then(({ rows }) => {
+      const types = {};
+      rows.forEach(
+        ({ output_id, output_quantity, input_id, input_quantity }) => {
+          // Non-destructively create or update data for output types
+          types[output_id] = {
+            ...types[output_id],
+            recipe_quantity: output_quantity,
+            inputs: {
+              ...(types[output_id] || {}).inputs,
+              [input_id]: input_quantity
+            }
+          };
+
+          // Do the same for input types
+          types[input_id] = {
+            ...types[input_id],
+            outputs: {
+              ...(types[input_id] || {}).outputs,
+              [output_id]: input_quantity
+            }
+          };
+        }
+      );
+      resolve(types);
+    });
+  });
+};
 
 //
 // Add adjusted price for each item for job cost calculation
@@ -220,7 +221,7 @@ const injectMarketSplit = types => {
   });
 };
 
-const injectTypeNames = (ids, types = {}) => {
+const injectTypeName = types => {
   return new Promise(resolve => {
     const ids = Object.keys(types).join(",");
     pgClient.query(namesForTypes(ids)).then(({ rows }) => {
