@@ -1,5 +1,4 @@
 const express = require('express');
-const basicAuth = require('express-basic-auth');
 const axios = require('axios');
 const util = require('util');
 const endpoints = require('./endpoints');
@@ -13,10 +12,6 @@ const pgClient = new Client({
   ssl: true
 });
 const MAX = Number.MAX_SAFE_INTEGER;
-
-app.use(basicAuth({
-  users: { 'hivSD': 'noSpiesAllowed' }
-}));
 
 app.get('/materials', (req, res) => {
   const { type, build_from } = req.query;
