@@ -66,17 +66,10 @@ app.get("/materials", (req, res) => {
 
 app.get("/market", (req, res) => {
   const types = {};
-  pgClient
-    .query(
-      `select "typeName" as name, "typeID" as id from "invTypes" where "typeID" in (${
-        req.query.types
-      })`
-    )
-    .then(({ rows }) => {
-      rows.forEach(({ name, id }) => (types[id] = { name }));
-      injectMarketSplit(types).then(types => {
-        res.json(types);
-      });
+  injectTypeNames(req.query.types, types)
+    .then(injectMarketSplit)
+    .then(types => {
+      res.json(types);
     });
 });
 
@@ -94,10 +87,21 @@ const cacheRequest = request => {
   let cache = {};
   return function() {
     const args = JSON.stringify(arguments);
-    cache[args] = cache[args] || request.apply(this, arguments).then(({ data }) => data);
+    cache[args] =
+      cache[args] || request.apply(this, arguments).then(({ data }) => data);
     return cache[args];
   };
 };
+
+//
+// Queries for PSQL
+//
+
+const namesForTypes = ids => `
+  select "typeName" as name, "typeID" as id from "invTypes" where "typeID" in (${
+    ids
+  })
+`;
 
 //
 // Expensive requests used in multiple calculations
@@ -109,7 +113,7 @@ const getSystemCosts = cacheRequest(systemCostsRequest);
 const adjustedPricesRequest = () => axios.get(endpoints.marketPrices);
 const getAdjustedPrices = cacheRequest(adjustedPricesRequest);
 
-const marketSplitRequest = (id) => { console.log(`ID`, id); return axios.get(endpoints.regionOrders(10000002, id)) };
+const marketSplitRequest = id => axios.get(endpoints.regionOrders(10000002, id));
 const getJitaSplit = cacheRequest(marketSplitRequest);
 
 //
@@ -213,6 +217,16 @@ const injectMarketSplit = types => {
         })
       )
       .then(() => resolve(types));
+  });
+};
+
+const injectTypeNames = (ids, types = {}) => {
+  return new Promise(resolve => {
+    const ids = Object.keys(types).join(",");
+    pgClient.query(namesForTypes(ids)).then(({ rows }) => {
+      rows.forEach(({ name, id }) => types[id].name = name);
+      resolve(types);
+    });
   });
 };
 
