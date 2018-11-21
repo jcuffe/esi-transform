@@ -46,8 +46,15 @@ app.get('/materials', (req, res) => {
           ...(types[input_id] && types[input_id].outputs)
         }
       });
-      getSplitForTypes(types)
-        .then(types => res.json(types));
+
+      // Inject price data for types
+      addMarketSplitToTypes(types)
+        .then(types => {
+          addBuildCostToTypes(type, types)
+            .then(types => {
+              res.json(types);
+            });
+        });
     })
     .catch((error) => {
       console.log(error);
@@ -61,15 +68,54 @@ app.get('/market', (req, res) => {
     .query(`select "typeName" as name, "typeID" as id from "invTypes" where "typeID" in (${req.query.types})`)
     .then(({ rows }) => {
       rows.forEach(({ name, id }) => types[id] = { name });
-      getSplitForTypes(types).then(splits => res.send(splits));
+      addMarketSplitToTypes(types)
+        .then(types => {
+          res.json(types);
+        })
     }); 
 });
+
+//
+// Recursively calculates build cost of recipe output
+//
+
+const addBuildCostToTypes = (root_id, types) => {
+  return new Promise(resolve => {
+    // Recursive function to populate each level with recipe costs
+    const recurse = (output_id) => {
+      if (!types[output_id].inputs) {
+        return;
+      }
+    
+      // Recurse to the bottom level before starting our work
+      Object
+        .keys(types[output_id].inputs)
+        .forEach(id => recurse(id, types));
+         
+      // Get current type's recipe cost using the items one level lower
+      types[output_id].recipe_cost = Object
+        .entries(types[output_id].inputs)
+        .reduce((sum, [input_id, input_quantity]) => {
+          const { buy, recipe_quantity, recipe_cost } = types[input_id];
+          const best_cost = Math.min(buy, (recipe_cost / recipe_quantity) || MAX);
+          return sum + best_cost * input_quantity;
+        }, 0);
+      types[output_id].recipe_unit_cost = types[output_id].recipe_cost / types[output_id].recipe_quantity;
+    }
+
+    // Kick off recursion
+    recurse(root_id);
+
+    // Pass control back to caller
+    resolve(types);
+  });
+}
 
 //
 // Adds buy / sell split to provided object with typeIDs for keys
 //
 
-const getSplitForTypes = (types) => {
+const addMarketSplitToTypes = (types) => {
   return new Promise(resolve => {
     const requests = [];
     Object.keys(types).forEach(type => {
