@@ -298,7 +298,7 @@ const injectMarketSplit = types => {
       requests.push(highSec);
     });
     Promise.all(requests)
-      .then(responses =>
+      .then(responses => {
         responses.forEach(orders => {
           orders = orders.filter(order => order.location_id == 60003760); // Jita 4-4
           if (orders.length == 0) {
@@ -320,8 +320,8 @@ const injectMarketSplit = types => {
           // attach buy and sell split to existing entry
           types[id] = { buy, sell, ...types[id] };
         })
-      )
-      .then(() => resolve(types));
+        resolve(types);
+      });
   });
 };
 
