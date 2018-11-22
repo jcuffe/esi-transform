@@ -26,7 +26,7 @@ app.get("/materials", (req, res) => {
 });
 
 app.get("/market", (req, res) => {
-  createTypesContainer(req.query.types.split(','))
+  createTypesContainer(req.query.types.split(","))
     .then(injectTypeNames)
     .then(injectMarketSplit)
     .then(types => {
@@ -81,21 +81,30 @@ const getJitaSplit = cacheRequest(marketSplitRequest);
 const createTypesContainer = ids => {
   return new Promise(resolve => {
     const types = {};
-    ids.forEach(id => types[id] = {});
+    ids.forEach(id => (types[id] = {}));
     resolve(types);
-  })
-}
+  });
+};
 
 const createHeirarchyForType = type => {
   return new Promise(resolve => {
     pgClient.query(materialsForType(type)).then(({ rows }) => {
       const types = {};
       rows.forEach(
-        ({ output_id, output_quantity, input_id, input_quantity }) => {
+        ({
+          output_id,
+          output_quantity,
+          activity_id,
+          input_id,
+          input_quantity
+        }) => {
           // Non-destructively create or update data for output types
           types[output_id] = {
             ...types[output_id],
-            recipe_quantity: output_quantity,
+            recipe: {
+              activity_id,
+              quantity: output_quantity
+            },
             inputs: {
               ...(types[output_id] || {}).inputs,
               [input_id]: input_quantity
@@ -147,17 +156,19 @@ const injectBuildCost = root_id => types => {
         return;
       }
 
+      const {
+        sell,
+        inputs,
+        recipe: { quantity, activity_id }
+      } = product;
+
       // Recurse to the bottom level before starting our work
-      Object.keys(product.inputs).forEach(input => recurse(input));
+      Object.keys(inputs).forEach(input => recurse(input));
 
       // Get current type's recipe cost using the items one level lower
-      product.recipe.cost = Object.entries(
-        product.inputs
-      ).reduce(
+      const cost = Object.entries(inputs).reduce(
         (sum, [input_id, input_quantity]) => {
-          const { buy, recipe, adjusted_price } = types[
-            input_id
-          ];
+          const { buy, recipe, adjusted_price } = types[input_id];
 
           // Compare buy order price to cost of constructing this input
           let best_cost = buy;
@@ -165,14 +176,20 @@ const injectBuildCost = root_id => types => {
             best_cost = Math.min(buy, recipe.cost.materials / recipe.quantity);
           }
 
-          // Apply material efficiency bonuses to our required inputs
-          const production_factor = 0.9; // Hardcoded perfection, for now
+          let efficiency_factor = 1.0;
+
+          if (activity_id == 1) {
+            efficiency_factor = 0.9; // Hardcoded perfection, for now
+          }
+
           const max_job_time = 2592000; // Assume 30 days of production
           const time = 25920; // PLACEHOLDER
           const runs = Math.ceil(Math.max(max_job_time / time, 1));
           
           // No partial consumption
-          const reduced_quantity = Math.ceil(runs * production_factor * input_quantity);
+          const reduced_quantity = Math.ceil(
+            runs * efficiency_factor * input_quantity
+          );
 
           // requirement cannot be reduced below 1 unit/run
           const minimum_quantity = Math.max(runs, reduced_quantity);
@@ -188,11 +205,11 @@ const injectBuildCost = root_id => types => {
         { materials: 0, job: 0 }
       );
 
-      const { recipe: { cost, quantity }, sell } = product;
-      const unit_cost = (cost.materials / quantity);
-      const margin = ((sell - unit_cost) / sell);
+      const unit_cost = cost.materials / quantity;
+      const margin = (sell - unit_cost) / sell;
       product.recipe = {
         ...product.recipe,
+        cost,
         unit_cost,
         margin
       };
