@@ -141,37 +141,61 @@ const injectAdjustedPrice = types => {
 const injectBuildCost = root_id => types => {
   return new Promise(resolve => {
     // Recursive function to populate each level with recipe costs
-    const recurse = output_id => {
-      if (!types[output_id].inputs) {
+    const recurse = id => {
+      const product = types[id];
+      if (!product.inputs) {
         return;
       }
 
       // Recurse to the bottom level before starting our work
-      Object.keys(types[output_id].inputs).forEach(id => recurse(id, types));
+      Object.keys(product.inputs).forEach(input => recurse(input));
 
       // Get current type's recipe cost using the items one level lower
-      types[output_id].recipe_cost = Object.entries(
-        types[output_id].inputs
+      product.recipe.cost = Object.entries(
+        product.inputs
       ).reduce(
         (sum, [input_id, input_quantity]) => {
-          const { buy, recipe_quantity, recipe_cost, adjusted_price } = types[
+          const { buy, recipe, adjusted_price } = types[
             input_id
           ];
 
+          // Compare buy order price to cost of constructing this input
           let best_cost = buy;
-          if (recipe_cost) {
-            best_cost = Math.min(buy, recipe_cost.materials / recipe_quantity);
+          if (recipe) {
+            best_cost = Math.min(buy, recipe.cost.materials / recipe.quantity);
           }
 
+          // Apply material efficiency bonuses to our required inputs
+          const production_factor = 0.9; // Hardcoded perfection, for now
+          const max_job_time = 2592000; // Assume 30 days of production
+          const time = 25920; // PLACEHOLDER
+          const runs = Math.ceil(Math.max(max_job_time / time, 1));
+          
+          // No partial consumption
+          const reduced_quantity = Math.ceil(runs * production_factor * input_quantity);
+
+          // requirement cannot be reduced below 1 unit/run
+          const minimum_quantity = Math.max(runs, reduced_quantity);
+
+          // single run
+          const adjusted_quantity = minimum_quantity / runs;
+
           return {
-            materials: sum.materials + best_cost * input_quantity,
+            materials: sum.materials + best_cost * adjusted_quantity,
             job: sum.job + adjusted_price * input_quantity
           };
         },
         { materials: 0, job: 0 }
       );
-      types[output_id].recipe_unit_cost =
-        types[output_id].recipe_cost / types[output_id].recipe_quantity;
+
+      const { recipe: { cost, quantity }, sell } = product;
+      const unit_cost = (cost.materials / quantity);
+      const margin = ((sell - unit_cost) / sell);
+      product.recipe = {
+        ...product.recipe,
+        unit_cost,
+        margin
+      };
     };
 
     // Kick off recursion
