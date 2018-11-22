@@ -152,11 +152,7 @@ const injectBuildCost = root_id => types => {
     // Recursive function to populate each level with recipe costs
     const recurse = id => {
       const product = types[id];
-      const {
-        sell,
-        inputs,
-        recipe
-      } = product;
+      const { sell, inputs, recipe } = product;
 
       if (!inputs) {
         return;
@@ -166,7 +162,6 @@ const injectBuildCost = root_id => types => {
       Object.keys(inputs).forEach(input => recurse(input));
 
       const { quantity, activity_id } = recipe;
-      const cost_index = 0.2;
 
       let base_job_cost = 0;
       let material_cost = 0;
@@ -181,21 +176,28 @@ const injectBuildCost = root_id => types => {
           best_cost = Math.min(buy, recipe.unit_cost);
         }
 
-        const adjusted_quantity = applyMaterialEfficiency(base_quantity, activity_id);
+        const adjusted_quantity = applyMaterialEfficiency(
+          base_quantity,
+          activity_id
+          );
 
         material_cost += best_cost * adjusted_quantity;
         base_job_cost += adjusted_price * base_quantity;
       }
 
-      const job_fee = base_job_cost * cost_index;
-      const blueprint_cost = material_cost + job_fee;
+        // HARDCODED
+        const cost_index = 0.2;
+        const tax_rate = 1.1;
+
+        const job_fees = base_job_cost * cost_index * tax_rate;
+        const blueprint_cost = material_cost + job_fees;
       const unit_cost = blueprint_cost / quantity;
       const margin = (sell - unit_cost) / sell;
       product.recipe = {
         margin,
         unit_cost,
         material_cost,
-        job_fee,
+        job_fees,
         blueprint_cost,
         ...product.recipe
       };
