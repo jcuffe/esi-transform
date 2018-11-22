@@ -1,6 +1,8 @@
 const apiUrl = "https://esi.evetech.net/latest/";
 
 const endpoints = {
+  authorize: "https://login.eveonline.com/v2/oauth/authorize/",
+  token: "https://login.eveonline.com/v2/oauth/token",
   corpAssets: (corporationId) => apiUrl + `corporations/${corporationId}/assets`,
   corpBlueprints: (corporationId) => apiUrl + `corporations/${corporationId}/blueprints`,
   corpTransactions: (corporationId, walletDivision = 1) => apiUrl + `corporations/${corporationId}/wallets/${walletDivision}/transactions`,

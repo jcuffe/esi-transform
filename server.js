@@ -1,6 +1,9 @@
 const express = require("express");
 const axios = require("axios");
-const util = require("util");
+const qs = require("qs");
+const { encode, decode, trim } = require("url-safe-base64");
+const crypto = require("crypto");
+const hash = crypto.createHash('sha256');
 const endpoints = require("./endpoints");
 const { Client } = require("pg");
 
@@ -12,6 +15,17 @@ const pgClient = new Client({
   ssl: true
 });
 const MAX = Number.MAX_SAFE_INTEGER;
+const client_id = "e3795144107b4e74aca8aaad347a07ac";
+
+//
+// Code challenge for ESI
+//
+
+const state = "the absolute";
+
+const bytes = trim(encode(crypto.randomBytes(32).toString('base64')));
+hash.update(bytes);
+const code_challenge = trim(encode(hash.digest().toString('base64'))); 
 
 app.get("/materials", (req, res) => {
   const { type } = req.query;
@@ -40,9 +54,48 @@ app.get("/costs", (req, res) => {
   });
 });
 
+app.get("/login", (req, res) => {
+  const params = qs.stringify({
+    response_type: "code",
+    redirect_uri: "http://localhost:5000/callback",
+    scope: "publicData esi-skills.read_skills.v1 esi-universe.read_structures.v1",
+    client_id,
+    code_challenge,
+    code_challenge_method: "S256",
+    state 
+  });
+  const url = [endpoints.authorize, params].join("?");
+  res.redirect(url);
+});
+
+app.get("/callback", (req, res) => {
+  const { code, state: esi_state } = req.query;
+  if (state !== esi_state) {
+    res.json({ error: "Invalid state received from ESI" });
+  }
+  const code_verifier = bytes;
+  const data = qs.stringify({
+    grant_type: "authorization_code",
+    client_id,
+    code, 
+    code_verifier
+  });
+  
+  axios.post(endpoints.token, data)
+    .then(({ data }) => {
+      res.send(data);
+    });
+});
+
 //
 // Cache the response of an axios request
 //
+
+const inspectResponse = (response) => {
+  console.log(`Status: ${response.status}`);
+  console.log(response.headers);
+  return response;
+};
 
 const cacheRequest = request => {
   let cache = {};
@@ -145,6 +198,8 @@ const injectAdjustedPrice = types => {
 
 //
 // Recursively calculates build cost of recipe output
+// TODO - Structure bonuses, System Cost Indices, Calculated job times
+//      - User configuration
 //
 
 const injectBuildCost = root_id => types => {
@@ -198,6 +253,7 @@ const injectBuildCost = root_id => types => {
         unit_cost,
         material_cost,
         job_fees,
+        base_job_cost,
         blueprint_cost,
         ...product.recipe
       };
