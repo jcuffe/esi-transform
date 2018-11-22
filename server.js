@@ -3,7 +3,7 @@ const axios = require("axios");
 const qs = require("qs");
 const { encode, decode, trim } = require("url-safe-base64");
 const crypto = require("crypto");
-const hash = crypto.createHash('sha256');
+const hash = crypto.createHash("sha256");
 const endpoints = require("./endpoints");
 const { Client } = require("pg");
 
@@ -22,28 +22,36 @@ const MAX = Number.MAX_SAFE_INTEGER;
 
 const client_id = process.env.CLIENT_ID;
 const redirect_uri = process.env.REDIRECT_URI;
+const scope = process.env.SCOPE;
 const state = "the absolute";
 
-const bytes = trim(encode(crypto.randomBytes(32).toString('base64')));
+const bytes = trim(encode(crypto.randomBytes(32).toString("base64")));
 hash.update(bytes);
-const code_challenge = trim(encode(hash.digest().toString('base64'))); 
+const code_challenge = trim(encode(hash.digest().toString("base64")));
 
 app.get("/materials", (req, res) => {
   const { type } = req.query;
+  const build_system = req.query.build_system || 30004759; // 1dq
+  const highsec_region = req.query.highsec_region || 10000002;
+  const highsec_station = req.query.highsec_station || 60003760;
+  const nullsec_structure = req.query.nullsec_structure || 1022734985679; // 1st Thetastar
+
   createHeirarchyForType(type)
-    .then(injectMarketSplit)
+    .then(injectHighsecSplit(highsec_region, highsec_station))
     .then(injectTypeName)
     .then(injectAdjustedPrice)
-    .then(injectBuildCost(type))
+    .then(injectBuildCost(type, build_system))
     .then(types => {
       res.json(types);
     });
 });
 
 app.get("/market", (req, res) => {
+  const highsec_region = req.query.highsec_region || 10000002;
+  const highsec_station = req.query.highsec_station || 60003760;
   createTypesContainer(req.query.types.split(","))
+    .then(injectHighsecSplit(highsec_region, highsec_station))
     .then(injectTypeName)
-    .then(injectMarketSplit)
     .then(types => {
       res.json(types);
     });
@@ -58,12 +66,12 @@ app.get("/costs", (req, res) => {
 app.get("/login", (req, res) => {
   const params = qs.stringify({
     response_type: "code",
-    scope: "publicData esi-skills.read_skills.v1 esi-universe.read_structures.v1",
     code_challenge_method: "S256",
+    scope, 
     redirect_uri,
     client_id,
     code_challenge,
-    state 
+    state
   });
   const url = [endpoints.authorize, params].join("?");
   res.redirect(url);
@@ -78,21 +86,20 @@ app.get("/callback", (req, res) => {
   const data = qs.stringify({
     grant_type: "authorization_code",
     client_id,
-    code, 
+    code,
     code_verifier
   });
-  
-  axios.post(endpoints.token, data)
-    .then(({ data }) => {
-      res.send(data);
-    });
+
+  axios.post(endpoints.token, data).then(({ data }) => {
+    res.send(data);
+  });
 });
 
 //
 // Cache the response of an axios request
 //
 
-const inspectResponse = (response) => {
+const inspectResponse = response => {
   console.log(`Status: ${response.status}`);
   console.log(response.headers);
   return response;
@@ -128,9 +135,9 @@ const getSystemCosts = cacheRequest(systemCostsRequest);
 const adjustedPricesRequest = () => axios.get(endpoints.marketPrices);
 const getAdjustedPrices = cacheRequest(adjustedPricesRequest);
 
-const marketSplitRequest = id =>
-  axios.get(endpoints.regionOrders(10000002, id));
-const getJitaSplit = cacheRequest(marketSplitRequest);
+const highsecSplitRequest = (region, id) =>
+  axios.get(endpoints.regionOrders(region, id));
+const getHighsecSplit = cacheRequest(highsecSplitRequest);
 
 const createTypesContainer = ids => {
   return new Promise(resolve => {
@@ -148,7 +155,7 @@ const createHeirarchyForType = type => {
         ({
           output_id,
           output_quantity,
-          activity_id,
+          activity_name,
           input_id,
           input_quantity
         }) => {
@@ -156,7 +163,7 @@ const createHeirarchyForType = type => {
           types[output_id] = {
             ...types[output_id],
             recipe: {
-              activity_id,
+              activity_name,
               quantity: output_quantity
             },
             inputs: {
@@ -203,73 +210,81 @@ const injectAdjustedPrice = types => {
 //      - User configuration
 //
 
-const injectBuildCost = root_id => types => {
+const injectBuildCost = (root_id, system_id) => types => {
   return new Promise(resolve => {
-    // Recursive function to populate each level with recipe costs
-    const recurse = id => {
-      const product = types[id];
-      const { sell, inputs, recipe } = product;
+    // Get access to cost index for our production system
+    provideCostIndices(system_id).then(cost_indices => {
+      // Recursive function to populate each level with recipe costs
+      const recurse = id => {
+        const product = types[id];
+        const { sell, inputs, recipe } = product;
 
-      if (!inputs) {
-        return;
-      }
-
-      // Recurse to the bottom level before starting our work
-      Object.keys(inputs).forEach(input => recurse(input));
-
-      const { quantity, activity_id } = recipe;
-
-      let base_job_cost = 0;
-      let material_cost = 0;
-
-      for (let id in inputs) {
-        const { buy, recipe, adjusted_price } = types[id];
-        const base_quantity = inputs[id];
-
-        let best_cost = buy;
-
-        if (recipe) {
-          best_cost = Math.min(buy, recipe.unit_cost);
+        if (!inputs) {
+          return;
         }
 
-        const adjusted_quantity = applyMaterialEfficiency(
-          base_quantity,
-          activity_id
+        // Recurse to the bottom level before starting our work
+        Object.keys(inputs).forEach(input => recurse(input));
+
+        const { quantity, activity_name } = recipe;
+
+        let base_job_cost = 0;
+        let material_cost = 0;
+
+        for (let id in inputs) {
+          const { buy, recipe, adjusted_price } = types[id];
+          const base_quantity = inputs[id];
+
+          let best_cost = buy;
+
+          if (recipe) {
+            best_cost = Math.min(buy, recipe.unit_cost);
+          }
+
+          const adjusted_quantity = applyMaterialEfficiency(
+            base_quantity,
+            activity_name
           );
 
-        material_cost += best_cost * adjusted_quantity;
-        base_job_cost += adjusted_price * base_quantity;
-      }
+          material_cost += best_cost * adjusted_quantity;
+          base_job_cost += adjusted_price * base_quantity;
+        }
 
         // HARDCODED
-        const cost_index = 0.2;
+        const cost_index = cost_indices[activity_name];
         const tax_rate = 1.1;
 
         const job_fees = base_job_cost * cost_index * tax_rate;
         const blueprint_cost = material_cost + job_fees;
-      const unit_cost = blueprint_cost / quantity;
-      const margin = (sell - unit_cost) / sell;
-      product.recipe = {
-        margin,
-        unit_cost,
-        material_cost,
-        job_fees,
-        base_job_cost,
-        blueprint_cost,
-        ...product.recipe
+        const unit_cost = blueprint_cost / quantity;
+        const margin = (sell - unit_cost) / sell;
+        product.recipe = {
+          margin,
+          unit_cost,
+          material_cost,
+          job_fees,
+          base_job_cost,
+          blueprint_cost,
+          cost_index,
+          ...product.recipe
+        };
       };
-    };
 
-    // Kick off recursion
-    recurse(root_id);
+      // Kick off recursion
+      recurse(root_id);
 
-    // Pass control back to caller
-    resolve(types);
+      // Pass control back to caller
+      resolve(types);
+    });
   });
 };
 
-const applyMaterialEfficiency = (input_quantity, activity_id, efficiency_factor = 1.0) => {
-  if (activity_id == 1) {
+const applyMaterialEfficiency = (
+  input_quantity,
+  activity_name,
+  efficiency_factor = 1.0
+) => {
+  if (activity_name == "manufacturing") {
     efficiency_factor = 0.9; // Hardcoded perfection, for now
   }
 
@@ -291,38 +306,36 @@ const applyMaterialEfficiency = (input_quantity, activity_id, efficiency_factor 
 // Adds buy / sell split to provided object with typeIDs for keys
 //
 
-const injectMarketSplit = types => {
+const injectHighsecSplit = (highsec_region, highsec_station) => types => {
   return new Promise(resolve => {
-    const requests = [];
-    Object.keys(types).forEach(id => {
-      const highSec = getJitaSplit(id); // The Forge region
-      requests.push(highSec);
-    });
-    Promise.all(requests)
-      .then(responses => {
-        responses.forEach(orders => {
-          orders = orders.filter(order => order.location_id == 60003760); // Jita 4-4
-          if (orders.length == 0) {
-            return;
-          }
+    const requests = Object.keys(types).map(
+      id => getHighsecSplit(highsec_region, id) // The Forge region
+    );
 
-          const buy = orders
-            .filter(order => order.is_buy_order)
-            .map(order => order.price)
-            .reduce((max, curr) => (curr > max ? curr : max), 0);
+    Promise.all(requests).then(responses => {
+      responses.forEach(orders => {
+        orders = orders.filter(order => order.location_id == highsec_station); // clamp to specified station
+        if (orders.length == 0) {
+          return;
+        }
 
-          const sell = orders
-            .filter(order => !order.is_buy_order)
-            .map(order => order.price)
-            .reduce((min, curr) => (curr < min ? curr : min), MAX);
+        const buy = orders
+          .filter(order => order.is_buy_order)
+          .map(order => order.price)
+          .reduce((max, curr) => (curr > max ? curr : max), 0);
 
-          const id = orders[0].type_id;
+        const sell = orders
+          .filter(order => !order.is_buy_order)
+          .map(order => order.price)
+          .reduce((min, curr) => (curr < min ? curr : min), MAX);
 
-          // attach buy and sell split to existing entry
-          types[id] = { buy, sell, ...types[id] };
-        })
-        resolve(types);
+        const id = orders[0].type_id;
+
+        // attach buy and sell split to existing entry
+        types[id] = { buy, sell, ...types[id] };
       });
+      resolve(types);
+    });
   });
 };
 
@@ -332,6 +345,21 @@ const injectTypeName = types => {
     pgClient.query(namesForTypes(ids)).then(({ rows }) => {
       rows.forEach(({ name, id }) => (types[id] = { name, ...types[id] }));
       resolve(types);
+    });
+  });
+};
+
+const provideCostIndices = id => {
+  return new Promise(resolve => {
+    getSystemCosts().then(systems => {
+      const indices = {};
+      systems
+        .find(system => system.solar_system_id == id)
+        .cost_indices
+        .forEach(
+          ({ activity, cost_index }) => (indices[activity] = cost_index)
+        );
+      resolve(indices);
     });
   });
 };
