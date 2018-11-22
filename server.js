@@ -15,12 +15,13 @@ const pgClient = new Client({
   ssl: true
 });
 const MAX = Number.MAX_SAFE_INTEGER;
-const client_id = "e3795144107b4e74aca8aaad347a07ac";
 
 //
 // Code challenge for ESI
 //
 
+const client_id = process.env.CLIENT_ID;
+const redirect_uri = process.env.REDIRECT_URI;
 const state = "the absolute";
 
 const bytes = trim(encode(crypto.randomBytes(32).toString('base64')));
@@ -57,11 +58,11 @@ app.get("/costs", (req, res) => {
 app.get("/login", (req, res) => {
   const params = qs.stringify({
     response_type: "code",
-    redirect_uri: "http://localhost:5000/callback",
     scope: "publicData esi-skills.read_skills.v1 esi-universe.read_structures.v1",
+    code_challenge_method: "S256",
+    redirect_uri,
     client_id,
     code_challenge,
-    code_challenge_method: "S256",
     state 
   });
   const url = [endpoints.authorize, params].join("?");
