@@ -16,8 +16,8 @@ const MAX = Number.MAX_SAFE_INTEGER;
 app.get("/materials", (req, res) => {
   const { type } = req.query;
   createHeirarchyForType(type)
-    .then(injectTypeName)
     .then(injectMarketSplit)
+    .then(injectTypeName)
     .then(injectAdjustedPrice)
     .then(injectBuildCost(type))
     .then(types => {
@@ -27,7 +27,7 @@ app.get("/materials", (req, res) => {
 
 app.get("/market", (req, res) => {
   createTypesContainer(req.query.types.split(","))
-    .then(injectTypeNames)
+    .then(injectTypeName)
     .then(injectMarketSplit)
     .then(types => {
       res.json(types);
@@ -152,66 +152,52 @@ const injectBuildCost = root_id => types => {
     // Recursive function to populate each level with recipe costs
     const recurse = id => {
       const product = types[id];
-      if (!product.inputs) {
-        return;
-      }
-
       const {
         sell,
         inputs,
-        recipe: { quantity, activity_id }
+        recipe
       } = product;
+
+      if (!inputs) {
+        return;
+      }
 
       // Recurse to the bottom level before starting our work
       Object.keys(inputs).forEach(input => recurse(input));
 
-      // Get current type's recipe cost using the items one level lower
-      const cost = Object.entries(inputs).reduce(
-        (sum, [input_id, input_quantity]) => {
-          const { buy, recipe, adjusted_price } = types[input_id];
+      const { quantity, activity_id } = recipe;
+      const cost_index = 0.2;
 
-          // Compare buy order price to cost of constructing this input
-          let best_cost = buy;
-          if (recipe) {
-            best_cost = Math.min(buy, recipe.cost.materials / recipe.quantity);
-          }
+      let base_job_cost = 0;
+      let material_cost = 0;
 
-          let efficiency_factor = 1.0;
+      for (let id in inputs) {
+        const { buy, recipe, adjusted_price } = types[id];
+        const base_quantity = inputs[id];
 
-          if (activity_id == 1) {
-            efficiency_factor = 0.9; // Hardcoded perfection, for now
-          }
+        let best_cost = buy;
 
-          const max_job_time = 2592000; // Assume 30 days of production
-          const time = 25920; // PLACEHOLDER
-          const runs = Math.ceil(Math.max(max_job_time / time, 1));
-          
-          // No partial consumption
-          const reduced_quantity = Math.ceil(
-            runs * efficiency_factor * input_quantity
-          );
+        if (recipe) {
+          best_cost = Math.min(buy, recipe.unit_cost);
+        }
 
-          // requirement cannot be reduced below 1 unit/run
-          const minimum_quantity = Math.max(runs, reduced_quantity);
+        const adjusted_quantity = applyMaterialEfficiency(base_quantity, activity_id);
 
-          // single run
-          const adjusted_quantity = minimum_quantity / runs;
+        material_cost += best_cost * adjusted_quantity;
+        base_job_cost += adjusted_price * base_quantity;
+      }
 
-          return {
-            materials: sum.materials + best_cost * adjusted_quantity,
-            job: sum.job + adjusted_price * input_quantity
-          };
-        },
-        { materials: 0, job: 0 }
-      );
-
-      const unit_cost = cost.materials / quantity;
+      const job_fee = base_job_cost * cost_index;
+      const blueprint_cost = material_cost + job_fee;
+      const unit_cost = blueprint_cost / quantity;
       const margin = (sell - unit_cost) / sell;
       product.recipe = {
-        ...product.recipe,
-        cost,
+        margin,
         unit_cost,
-        margin
+        material_cost,
+        job_fee,
+        blueprint_cost,
+        ...product.recipe
       };
     };
 
@@ -221,6 +207,25 @@ const injectBuildCost = root_id => types => {
     // Pass control back to caller
     resolve(types);
   });
+};
+
+const applyMaterialEfficiency = (input_quantity, activity_id, efficiency_factor = 1.0) => {
+  if (activity_id == 1) {
+    efficiency_factor = 0.9; // Hardcoded perfection, for now
+  }
+
+  const max_job_time = 2592000; // Assume 30 days of production
+  const time = 25920; // PLACEHOLDER
+  const runs = Math.ceil(Math.max(max_job_time / time, 1));
+
+  // EVE Industry formula
+  const reduced_quantity = Math.max(
+    runs,
+    Math.ceil(runs * efficiency_factor * input_quantity)
+  );
+
+  // single run
+  return reduced_quantity / runs;
 };
 
 //
@@ -266,7 +271,7 @@ const injectTypeName = types => {
   return new Promise(resolve => {
     const ids = Object.keys(types).join(",");
     pgClient.query(namesForTypes(ids)).then(({ rows }) => {
-      rows.forEach(({ name, id }) => types[id].name = name);
+      rows.forEach(({ name, id }) => (types[id] = { name, ...types[id] }));
       resolve(types);
     });
   });
