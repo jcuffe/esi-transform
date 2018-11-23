@@ -5,15 +5,12 @@ const { encode, decode, trim } = require("url-safe-base64");
 const crypto = require("crypto");
 const hash = crypto.createHash("sha256");
 const endpoints = require("./endpoints");
-const { Client } = require("pg");
+const { Pool } = require("pg");
 
 require("dotenv").config();
 
 const app = express();
-const pgClient = new Client({
-  connectionString: process.env.DATABASE_URL,
-  ssl: true
-});
+const pool = new Pool();
 const MAX = Number.MAX_SAFE_INTEGER;
 
 //
@@ -66,7 +63,7 @@ app.get("/login", (req, res) => {
   const params = qs.stringify({
     response_type: "code",
     code_challenge_method: "S256",
-    scope, 
+    scope,
     redirect_uri,
     client_id,
     code_challenge,
@@ -148,7 +145,7 @@ const createTypesContainer = ids => {
 
 const createHeirarchyForType = type => {
   return new Promise(resolve => {
-    pgClient.query(materialsForType(type)).then(({ rows }) => {
+    pool.query(materialsForType(type)).then(({ rows }) => {
       const types = {};
       rows.forEach(
         ({
@@ -198,7 +195,6 @@ const injectAdjustedPrice = types => {
           types[id].adjusted_price = adjusted_price;
         }
       });
-      console.log("resolving adjusted prices");
       resolve(types);
     });
   });
@@ -213,70 +209,72 @@ const injectAdjustedPrice = types => {
 const injectBuildCost = (root_id, system_id) => in_types => {
   return new Promise(resolve => {
     // Get access to adjusted prices and cost indices for job fee calculation
-    Promise.all([injectAdjustedPrice(in_types), provideCostIndices(system_id)])
-      .then(([types, cost_indices]) => {
-        // Recursive function to populate each level with recipe costs
-        const recurse = id => {
-          const product = types[id];
-          const { sell, inputs, recipe } = product;
+    Promise.all([
+      injectAdjustedPrice(in_types),
+      provideCostIndices(system_id)
+    ]).then(([types, cost_indices]) => {
+      // Recursive function to populate each level with recipe costs
+      const recurse = id => {
+        const product = types[id];
+        const { sell, inputs, recipe } = product;
 
-          if (!inputs) {
-            return;
+        if (!inputs) {
+          return;
+        }
+
+        // Recurse to the bottom level before starting our work
+        Object.keys(inputs).forEach(input => recurse(input));
+
+        const { quantity, activity_name } = recipe;
+
+        let base_job_cost = 0;
+        let material_cost = 0;
+
+        for (let id in inputs) {
+          const { buy, recipe, adjusted_price } = types[id];
+          const base_quantity = inputs[id];
+
+          let best_cost = buy;
+
+          if (recipe) {
+            best_cost = Math.min(buy, recipe.unit_cost);
           }
 
-          // Recurse to the bottom level before starting our work
-          Object.keys(inputs).forEach(input => recurse(input));
+          const adjusted_quantity = applyMaterialEfficiency(
+            base_quantity,
+            activity_name
+          );
 
-          const { quantity, activity_name } = recipe;
+          material_cost += best_cost * adjusted_quantity;
+          base_job_cost += adjusted_price * base_quantity;
+        }
 
-          let base_job_cost = 0;
-          let material_cost = 0;
+        // HARDCODED
+        const cost_index = cost_indices[activity_name];
+        const tax_rate = 1.1;
 
-          for (let id in inputs) {
-            const { buy, recipe, adjusted_price } = types[id];
-            const base_quantity = inputs[id];
-
-            let best_cost = buy;
-
-            if (recipe) {
-              best_cost = Math.min(buy, recipe.unit_cost);
-            }
-
-            const adjusted_quantity = applyMaterialEfficiency(
-              base_quantity,
-              activity_name
-            );
-
-            material_cost += best_cost * adjusted_quantity;
-            base_job_cost += adjusted_price * base_quantity;
-          }
-
-          // HARDCODED
-          const cost_index = cost_indices[activity_name];
-          const tax_rate = 1.1;
-
-          const job_fees = base_job_cost * cost_index * tax_rate;
-          const blueprint_cost = material_cost + job_fees;
-          const unit_cost = blueprint_cost / quantity;
-          const margin = (sell - unit_cost) / sell;
-          product.recipe = {
-            margin,
-            unit_cost,
-            material_cost,
-            job_fees,
-            base_job_cost,
-            blueprint_cost,
-            cost_index,
-            ...product.recipe
-          };
+        const job_fees = base_job_cost * cost_index * tax_rate;
+        const blueprint_cost = material_cost + job_fees;
+        const unit_cost = blueprint_cost / quantity;
+        const margin = (sell - unit_cost) / sell;
+        product.recipe = {
+          margin,
+          unit_cost,
+          material_cost,
+          job_fees,
+          base_job_cost,
+          blueprint_cost,
+          cost_index,
+          ...product.recipe
         };
+      };
 
-        // Kick off recursion
-        recurse(root_id);
+      // Kick off recursion
+      recurse(root_id);
 
-        // Pass control back to caller
-        resolve(types);
-      });
+      // Pass control back to caller
+      resolve(types);
+    });
   });
 };
 
@@ -340,51 +338,46 @@ const injectHighsecSplit = (highsec_region, highsec_station) => types => {
   });
 };
 
-const injectTypeName = types => {
-  return new Promise(resolve => {
-    const ids = Object.keys(types).join(",");
-    pgClient.query(namesForTypes(ids)).then(({ rows }) => {
-      rows.forEach(({ name, id }) => (types[id] = { name, ...types[id] }));
-      resolve(types);
-    });
-  });
+//
+// Lookup type names for each ID in a dictionary with IDs for keys
+//
+
+const injectTypeName = async types => {
+  const ids = Object.keys(types).join(",");
+  const { rows } = await pool.query(namesForTypes(ids))
+  rows.forEach(({ name, id }) => (types[id] = { name, ...types[id] }));
+  return types;
 };
 
-const provideCostIndices = id => {
-  return new Promise(resolve => {
-    getSystemCosts().then(systems => {
-      const indices = {};
-      systems
-        .find(system => system.solar_system_id == id)
-        .cost_indices
-        .forEach(({ activity, cost_index }) => {
-          // CCP
-          if (activity == "reaction") {
-            activity = "reactions";
-          } 
+const provideCostIndices = async id => {
+  const indices = {};
+  const systems = await getSystemCosts();
+  systems
+    .find(system => system.solar_system_id == id)
+    .cost_indices.forEach(({ activity, cost_index }) => {
+      // CCP
+      if (activity == "reaction") {
+        activity = "reactions";
+      }
 
-          indices[activity] = cost_index
-        });
-      console.log("resolving indices");
-      resolve(indices);
+      indices[activity] = cost_index;
     });
-  });
+  return indices;
 };
 
 const port = process.env.PORT || 5000;
 
 // Connect to postgres first
-pgClient
-  .connect()
+const startup_tasks = [
+  pool.connect(),
+  app.listen(port),
+  getAdjustedPrices(),
+  getSystemCosts()
+];
+ 
+Promise.all(startup_tasks)
   .then(() => {
-    // Initialize the cache for expensive requests
-    getAdjustedPrices();
-    getSystemCosts();
-
-    // Start the server
-    app.listen(port, () => {
-      console.log("Server started");
-    });
+    console.log("Server started");
   })
   .catch(err => {
     console.log(err);
