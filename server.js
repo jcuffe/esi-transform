@@ -39,7 +39,6 @@ app.get("/materials", (req, res) => {
   createHeirarchyForType(type)
     .then(injectHighsecSplit(highsec_region, highsec_station))
     .then(injectTypeName)
-    .then(injectAdjustedPrice)
     .then(injectBuildCost(type, build_system))
     .then(types => {
       res.json(types);
@@ -199,6 +198,7 @@ const injectAdjustedPrice = types => {
           types[id].adjusted_price = adjusted_price;
         }
       });
+      console.log("resolving adjusted prices");
       resolve(types);
     });
   });
@@ -210,72 +210,73 @@ const injectAdjustedPrice = types => {
 //      - User configuration
 //
 
-const injectBuildCost = (root_id, system_id) => types => {
+const injectBuildCost = (root_id, system_id) => in_types => {
   return new Promise(resolve => {
-    // Get access to cost index for our production system
-    provideCostIndices(system_id).then(cost_indices => {
-      // Recursive function to populate each level with recipe costs
-      const recurse = id => {
-        const product = types[id];
-        const { sell, inputs, recipe } = product;
+    // Get access to adjusted prices and cost indices for job fee calculation
+    Promise.all([injectAdjustedPrice(in_types), provideCostIndices(system_id)])
+      .then(([types, cost_indices]) => {
+        // Recursive function to populate each level with recipe costs
+        const recurse = id => {
+          const product = types[id];
+          const { sell, inputs, recipe } = product;
 
-        if (!inputs) {
-          return;
-        }
-
-        // Recurse to the bottom level before starting our work
-        Object.keys(inputs).forEach(input => recurse(input));
-
-        const { quantity, activity_name } = recipe;
-
-        let base_job_cost = 0;
-        let material_cost = 0;
-
-        for (let id in inputs) {
-          const { buy, recipe, adjusted_price } = types[id];
-          const base_quantity = inputs[id];
-
-          let best_cost = buy;
-
-          if (recipe) {
-            best_cost = Math.min(buy, recipe.unit_cost);
+          if (!inputs) {
+            return;
           }
 
-          const adjusted_quantity = applyMaterialEfficiency(
-            base_quantity,
-            activity_name
-          );
+          // Recurse to the bottom level before starting our work
+          Object.keys(inputs).forEach(input => recurse(input));
 
-          material_cost += best_cost * adjusted_quantity;
-          base_job_cost += adjusted_price * base_quantity;
-        }
+          const { quantity, activity_name } = recipe;
 
-        // HARDCODED
-        const cost_index = cost_indices[activity_name];
-        const tax_rate = 1.1;
+          let base_job_cost = 0;
+          let material_cost = 0;
 
-        const job_fees = base_job_cost * cost_index * tax_rate;
-        const blueprint_cost = material_cost + job_fees;
-        const unit_cost = blueprint_cost / quantity;
-        const margin = (sell - unit_cost) / sell;
-        product.recipe = {
-          margin,
-          unit_cost,
-          material_cost,
-          job_fees,
-          base_job_cost,
-          blueprint_cost,
-          cost_index,
-          ...product.recipe
+          for (let id in inputs) {
+            const { buy, recipe, adjusted_price } = types[id];
+            const base_quantity = inputs[id];
+
+            let best_cost = buy;
+
+            if (recipe) {
+              best_cost = Math.min(buy, recipe.unit_cost);
+            }
+
+            const adjusted_quantity = applyMaterialEfficiency(
+              base_quantity,
+              activity_name
+            );
+
+            material_cost += best_cost * adjusted_quantity;
+            base_job_cost += adjusted_price * base_quantity;
+          }
+
+          // HARDCODED
+          const cost_index = cost_indices[activity_name];
+          const tax_rate = 1.1;
+
+          const job_fees = base_job_cost * cost_index * tax_rate;
+          const blueprint_cost = material_cost + job_fees;
+          const unit_cost = blueprint_cost / quantity;
+          const margin = (sell - unit_cost) / sell;
+          product.recipe = {
+            margin,
+            unit_cost,
+            material_cost,
+            job_fees,
+            base_job_cost,
+            blueprint_cost,
+            cost_index,
+            ...product.recipe
+          };
         };
-      };
 
-      // Kick off recursion
-      recurse(root_id);
+        // Kick off recursion
+        recurse(root_id);
 
-      // Pass control back to caller
-      resolve(types);
-    });
+        // Pass control back to caller
+        resolve(types);
+      });
   });
 };
 
@@ -356,9 +357,15 @@ const provideCostIndices = id => {
       systems
         .find(system => system.solar_system_id == id)
         .cost_indices
-        .forEach(
-          ({ activity, cost_index }) => (indices[activity] = cost_index)
-        );
+        .forEach(({ activity, cost_index }) => {
+          // CCP
+          if (activity == "reaction") {
+            activity = "reactions";
+          } 
+
+          indices[activity] = cost_index
+        });
+      console.log("resolving indices");
       resolve(indices);
     });
   });
